@@ -74,6 +74,8 @@ Sample App
 		}
 
 		for {
+			// Enter a number and hit enter to change the size
+			// of the work pool.
 			var c int
 			fmt.Scanf("%d", &c)
 			if c == 0 {
