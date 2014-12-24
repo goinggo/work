@@ -77,7 +77,8 @@ func (w *Work) Stats() Stats {
 	return s
 }
 
-// Add creates goroutines to process work.
+// Add creates goroutines to process work or sets a count for
+// goroutines to terminate.
 func (w *Work) Add(goroutines int) {
 	if goroutines == 0 {
 		return
@@ -101,7 +102,7 @@ func (w *Work) Add(goroutines int) {
 				goroutines = current
 			}
 
-			// Set this value so when goroutines are done processing work
+			// Set this value so when goroutine's are done processing work
 			// they can check to see if they should quit.
 			w.remove = goroutines
 		}
@@ -111,7 +112,7 @@ func (w *Work) Add(goroutines int) {
 
 // work performs the users work and keeps stats.
 func (w *Work) work() {
-	// The for range will block until this goroutines is
+	// The for range will block until this goroutine is
 	// asked to perform some work.
 	for t := range w.tasks {
 		atomic.AddInt64(&w.stats.Active, 1)
@@ -151,7 +152,7 @@ func (w *Work) Run(work Worker) {
 	atomic.AddInt64(&w.stats.Pending, -1)
 }
 
-// Shutdown waits for all the workers to finish
+// Shutdown waits for all the workers to finish.
 func (w *Work) Shutdown() {
 	close(w.tasks)
 	close(w.shutdown)
