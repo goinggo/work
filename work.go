@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	addRoutine    = 1
-	removeRoutine = 2
+	addRoutine = 1
+	updRoutine = 2
+	rmvRoutine = 3
+	doaRoutine = 4
 )
 
 // ErrorInvalidMinRoutines is the error for the invalid minRoutine parameter.
@@ -41,6 +43,13 @@ type routine struct {
 	lastRun time.Time
 }
 
+// command is the command the manager is asked to process.
+type command struct {
+	task   int // The tasks to perform.
+	id     int // The id of the routine to act against.
+	repeat int // The number of times to repeat the task.
+}
+
 // Work provides a pool of routines that can execute any Worker
 // tasks that are submitted.
 type Work struct {
@@ -49,14 +58,23 @@ type Work struct {
 	statTime    time.Duration   // Time to display stats.
 	counter     int             // counter maintains a running total number of routines ever created.
 	tasks       chan Worker     // Unbuffered channel that work is sent into.
-	control     chan int        // Unbuffered channel that work for routine management is send into.
+	control     chan command    // Unbuffered channel that work for the manager is send into.
 	kill        chan struct{}   // Unbuffered channel to signal for a goroutine to die.
-	killR       chan int        // Unbuffered channel to respond on a kill request.
 	shutdown    chan struct{}   // Closed when the Work pool is being shutdown.
 	wg          sync.WaitGroup  // Manages the number of routines for shutdown.
 	routines    map[int]routine // Map of routines that currently exist in the pool.
 	active      int64           // Active number of routines in the work pool.
 	pending     int64           // Pending number of routines waiting to submit work.
+}
+
+// Checks if we are in shutdown mode.
+func (w *Work) isShutdown() bool {
+	select {
+	case <-w.shutdown:
+		return true
+	default:
+		return false
+	}
 }
 
 // manager controls the map of routines and helps to remove
@@ -68,62 +86,88 @@ func (w *Work) manager() {
 		log.Println("Work : manager : Started")
 		idle := time.After(w.idleTime)
 		stats := time.After(time.Second)
+		shutdown := w.shutdown
 
 		for {
 			select {
-			case <-w.shutdown:
-				log.Println("Work : manager : Started : Shutdown")
+			case <-shutdown:
 				l := len(w.routines)
 				for i := 0; i < l; i++ {
-					// Send a kill signal and wait for any goroutine
-					// to get the signal to die. It will return its id.
-					w.kill <- struct{}{}
-					id := <-w.killR
-
-					// Remove this routine from the map.
-					delete(w.routines, id)
+					// Send a kill to all the existing routines.
+					go func() {
+						w.kill <- struct{}{}
+					}()
 				}
 
-				// Mark that we are done.
-				w.wg.Done()
-				log.Println("Work : manager : Completed : Shutdown")
-				return
+				// This channel is now closed and we don't
+				// want to process it again.
+				shutdown = nil
 
-			case cmd := <-w.control:
-				switch cmd {
+			case c := <-w.control:
+				switch c.task {
 				// Add new routine.
 				case addRoutine:
 					log.Println("Work : manager : Info : Add Routine")
 
-					// Capture a unique id.
-					w.counter++
+					// Increment the wait group count.
+					w.wg.Add(c.repeat)
 
-					// Add a routine to the map.
-					w.routines[w.counter] = routine{
-						id:      w.counter,
-						lastRun: time.Now(),
+					for i := 0; i < c.repeat; i++ {
+						// Capture a unique id.
+						w.counter++
+
+						// Add a routine to the map.
+						w.routines[w.counter] = routine{
+							id:      w.counter,
+							lastRun: time.Now(),
+						}
+
+						// Create the routine.
+						go w.work(w.counter)
 					}
 
-					// Create the routine.
-					go w.work(w.counter)
+				// Update the specified routine.
+				case updRoutine:
+					r := w.routines[c.id]
+					r.lastRun = time.Now()
+					w.routines[c.id] = r
 
-				// Remove routine.
-				case removeRoutine:
+				// Remove a routine.
+				case rmvRoutine:
 					log.Println("Work : manager : Info : Remove Routine")
 
-					// Are there routines to remove.
-					if len(w.routines) <= w.minRoutines {
-						log.Println("Work : manager : Info : Can't Remove, At Minimum")
-						continue
+					t := len(w.routines)
+					for i := 0; i < c.repeat; i++ {
+						// Are there routines to remove.
+						if t <= w.minRoutines {
+							break
+						}
+
+						// Send a kill signal to remove a routine.
+						go func() {
+							w.kill <- struct{}{}
+						}()
+
+						// Remove a routine from the count.
+						t--
 					}
 
-					// Send a kill signal and wait for any goroutine
-					// to get the signal to die. It will return its id.
-					w.kill <- struct{}{}
-					id := <-w.killR
+				// Routine reports dead.
+				case doaRoutine:
+					log.Println("Work : manager : Info : Routine Killed :", c.id)
 
 					// Remove this routine from the map.
-					delete(w.routines, id)
+					delete(w.routines, c.id)
+
+					// Mark this goroutine is gone.
+					w.wg.Done()
+
+					// Do we need to shutdown this manager.
+					if len(w.routines) == 0 && w.isShutdown() {
+						log.Println("Work : manager : Completed : Shutdown")
+						w.wg.Done()
+						return
+					}
 				}
 
 			case <-idle:
@@ -134,13 +178,11 @@ func (w *Work) manager() {
 
 				for _, r := range w.routines {
 					if now.Sub(r.lastRun) >= w.idleTime {
-						// Send a kill signal and wait for any goroutine
-						// to get the signal to die. It will return its id.
-						w.kill <- struct{}{}
-						id := <-w.killR
-
-						// Remove this routine from the map.
-						delete(w.routines, id)
+						// Send a kill signal to remove some idle routines.
+						// Not relevant which routines are choosen.
+						go func() {
+							w.kill <- struct{}{}
+						}()
 					}
 				}
 
@@ -182,9 +224,8 @@ func New(minRoutines int, idleTime time.Duration, statTime time.Duration) (*Work
 		idleTime:    idleTime,
 		statTime:    statTime,
 		tasks:       make(chan Worker),
-		control:     make(chan int),
+		control:     make(chan command),
 		kill:        make(chan struct{}),
-		killR:       make(chan int),
 		shutdown:    make(chan struct{}),
 		routines:    make(map[int]routine),
 	}
@@ -193,9 +234,7 @@ func New(minRoutines int, idleTime time.Duration, statTime time.Duration) (*Work
 	w.manager()
 
 	// Add the routines.
-	for i := 0; i < minRoutines; i++ {
-		w.control <- addRoutine
-	}
+	w.Add(minRoutines)
 
 	return &w, nil
 }
@@ -208,43 +247,56 @@ func (w *Work) Add(routines int) {
 	}
 
 	// Determine if we are adding or removing.
-	command := addRoutine
+	cmd := command{
+		task:   addRoutine,
+		repeat: routines,
+	}
 	if routines < 0 {
-		routines = routines * -1
-		command = removeRoutine
+		cmd.task = rmvRoutine
+		cmd.repeat = routines * -1
 	}
 
-	// Send the commands in.
-	for i := 0; i < routines; i++ {
-		w.control <- command
-	}
+	// Send the command
+	w.control <- cmd
 }
 
 // work performs the users work and keeps stats.
 func (w *Work) work(id int) {
-	log.Println("Work : gr : Started :", id)
 done:
 	for {
 		select {
 		case t := <-w.tasks:
 			atomic.AddInt64(&w.active, 1)
-			t.Work()
+			{
+				// Perform the work.
+				t.Work()
+
+				// Update the lastRun time.
+				w.control <- command{
+					task: updRoutine,
+					id:   id,
+				}
+			}
 			atomic.AddInt64(&w.active, -1)
 
 		case <-w.kill:
-			w.killR <- id
+			// Report this routine is dead.
+			w.control <- command{
+				task: doaRoutine,
+				id:   id,
+			}
 			break done
 		}
 	}
-
-	log.Println("Work : gr : Down :", id)
 }
 
 // Run wait for the goroutine pool to take the work
 // to be executed.
 func (w *Work) Run(work Worker) {
 	atomic.AddInt64(&w.pending, 1)
-	w.tasks <- work
+	{
+		w.tasks <- work
+	}
 	atomic.AddInt64(&w.pending, -1)
 }
 
