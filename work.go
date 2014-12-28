@@ -87,6 +87,10 @@ func (w *Work) manager() {
 					// Capture a unique id.
 					w.counter++
 
+					// Add to the counts.
+					w.wg.Add(1)
+					atomic.AddInt64(&w.routines, 1)
+
 					// Create the routine.
 					go w.work(w.counter)
 
@@ -174,16 +178,12 @@ func (w *Work) Add(routines int) {
 
 // work performs the users work and keeps stats.
 func (w *Work) work(id int) {
-	// Increment the counts.
-	w.wg.Add(1)
-	routine := int(atomic.AddInt64(&w.routines, 1))
-
 	// Create a timer to track idle time.
 	var idle <-chan time.Time
 	var timer *time.Timer
 
-	// Don't set the time until we are above min routines.
-	if routine > w.minRoutines {
+	// Set the timer for routines about the min mark.
+	if id > w.minRoutines {
 		timer = time.NewTimer(w.idleTime)
 		idle = timer.C
 	}
