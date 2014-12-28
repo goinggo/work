@@ -16,7 +16,7 @@ import (
 
 const (
 	addRoutine = 1
-	rmvRoutine = 3
+	rmvRoutine = 2
 )
 
 // ErrorInvalidMinRoutines is the error for the invalid minRoutine parameter.
