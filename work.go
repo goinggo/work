@@ -102,6 +102,7 @@ func (w *Work) manager() {
 
 					// Are there routines to remove.
 					if routines <= w.minRoutines {
+						log.Println("Work : manager : Info : Remove Routine Cancelled")
 						break
 					}
 
