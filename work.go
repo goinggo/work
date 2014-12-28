@@ -49,7 +49,7 @@ type Work struct {
 
 // New creates a new Worker.
 func New(minRoutines int, statTime time.Duration) (*Work, error) {
-	if minRoutines < 0 {
+	if minRoutines <= 0 {
 		return nil, ErrorInvalidMinRoutines
 	}
 
