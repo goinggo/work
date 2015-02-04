@@ -20,6 +20,7 @@ Sample App
 
 	import (
 		"fmt"
+		"log"
 		"sync"
 		"time"
 
@@ -41,16 +42,22 @@ Sample App
 	}
 
 	// Work implements the Worker interface.
-	func (m *namePrinter) Work() {
+	func (m *namePrinter) Work(id int) {
 		fmt.Println(m.name)
 		time.Sleep(time.Second)
+	}
+
+	func logFunc(message string) {
+		log.Println(message)
 	}
 
 	// main is the entry point for all Go programs.
 	func main() {
 		// Create a work value with 2 goroutines.
-		w := work.New(2)
-		w.LogStats(100 * time.Millisecond)
+		w, err := work.New(2, time.Second, logFunc)
+		if err != nil {
+			log.Fatalln(err)
+		}
 
 		var wg sync.WaitGroup
 		wg.Add(10 * len(names))
