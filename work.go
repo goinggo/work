@@ -2,7 +2,6 @@
 // Use of this source code is governed by a MIT
 // license that can be found in the LICENSE handle.
 
-// Package work manages a pool of routines to perform work.
 package work
 
 import (
@@ -30,9 +29,9 @@ type Worker interface {
 	Work(id int)
 }
 
-// Work provides a pool of routines that can execute any Worker
+// Pool provides a pool of routines that can execute any Worker
 // tasks that are submitted.
-type Work struct {
+type Pool struct {
 	minRoutines int            // Minumum number of routines always in the pool.
 	statTime    time.Duration  // Time to display stats.
 	counter     int            // Maintains a running total number of routines ever created.
@@ -49,7 +48,7 @@ type Work struct {
 }
 
 // New creates a new Worker.
-func New(minRoutines int, statTime time.Duration, logFunc func(message string)) (*Work, error) {
+func New(minRoutines int, statTime time.Duration, logFunc func(message string)) (*Pool, error) {
 	if minRoutines <= 0 {
 		return nil, ErrorInvalidMinRoutines
 	}
@@ -58,7 +57,7 @@ func New(minRoutines int, statTime time.Duration, logFunc func(message string)) 
 		return nil, ErrorInvalidStatTime
 	}
 
-	w := Work{
+	p := Pool{
 		minRoutines: minRoutines,
 		statTime:    statTime,
 		tasks:       make(chan Worker),
@@ -69,17 +68,17 @@ func New(minRoutines int, statTime time.Duration, logFunc func(message string)) 
 	}
 
 	// Start the manager.
-	w.manager()
+	p.manager()
 
 	// Add the routines.
-	w.Add(minRoutines)
+	p.Add(minRoutines)
 
-	return &w, nil
+	return &p, nil
 }
 
 // Add creates routines to process work or sets a count for
 // routines to terminate.
-func (w *Work) Add(routines int) {
+func (p *Pool) Add(routines int) {
 	if routines == 0 {
 		return
 	}
@@ -91,127 +90,127 @@ func (w *Work) Add(routines int) {
 	}
 
 	for i := 0; i < routines; i++ {
-		w.control <- cmd
+		p.control <- cmd
 	}
 }
 
 // work performs the users work and keeps stats.
-func (w *Work) work(id int) {
+func (p *Pool) work(id int) {
 done:
 	for {
 		select {
-		case t := <-w.tasks:
-			atomic.AddInt64(&w.active, 1)
+		case t := <-p.tasks:
+			atomic.AddInt64(&p.active, 1)
 			{
 				// Perform the work.
 				t.Work(id)
 			}
-			atomic.AddInt64(&w.active, -1)
+			atomic.AddInt64(&p.active, -1)
 
-		case <-w.kill:
+		case <-p.kill:
 			break done
 		}
 	}
 
 	// Decrement the counts.
-	atomic.AddInt64(&w.routines, -1)
-	w.wg.Done()
+	atomic.AddInt64(&p.routines, -1)
+	p.wg.Done()
 
-	w.log("Worker : Shutting Down")
+	p.log("Worker : Shutting Down")
 }
 
 // Run wait for the goroutine pool to take the work
 // to be executed.
-func (w *Work) Run(work Worker) {
-	atomic.AddInt64(&w.pending, 1)
+func (p *Pool) Run(work Worker) {
+	atomic.AddInt64(&p.pending, 1)
 	{
-		w.tasks <- work
+		p.tasks <- work
 	}
-	atomic.AddInt64(&w.pending, -1)
+	atomic.AddInt64(&p.pending, -1)
 }
 
 // Shutdown waits for all the workers to finish.
-func (w *Work) Shutdown() {
-	close(w.shutdown)
-	w.wg.Wait()
+func (p *Pool) Shutdown() {
+	close(p.shutdown)
+	p.wg.Wait()
 }
 
 // manager controls changes to the work pool including stats
 // and shutting down.
-func (w *Work) manager() {
-	w.wg.Add(1)
+func (p *Pool) manager() {
+	p.wg.Add(1)
 
 	go func() {
-		w.log("Work Manager : Started")
+		p.log("Work Manager : Started")
 
 		// Create a timer to run stats.
-		timer := time.NewTimer(w.statTime)
+		timer := time.NewTimer(p.statTime)
 
 		for {
 			select {
-			case <-w.shutdown:
+			case <-p.shutdown:
 				// Capture the current number of routines.
-				routines := int(atomic.LoadInt64(&w.routines))
+				routines := int(atomic.LoadInt64(&p.routines))
 
 				// Send a kill to all the existing routines.
 				for i := 0; i < routines; i++ {
-					w.kill <- struct{}{}
+					p.kill <- struct{}{}
 				}
 
 				// Decrement the waitgroup and kill the manager.
-				w.wg.Done()
+				p.wg.Done()
 				return
 
-			case c := <-w.control:
+			case c := <-p.control:
 				switch c {
 				case addRoutine:
-					w.log("Work Manager : Add Routine")
+					p.log("Work Manager : Add Routine")
 
 					// Capture a unique id.
-					w.counter++
+					p.counter++
 
 					// Add to the counts.
-					w.wg.Add(1)
-					atomic.AddInt64(&w.routines, 1)
+					p.wg.Add(1)
+					atomic.AddInt64(&p.routines, 1)
 
 					// Create the routine.
-					go w.work(w.counter)
+					go p.work(p.counter)
 
 				case rmvRoutine:
-					w.log("Work Manager : Remove Routine")
+					p.log("Work Manager : Remove Routine")
 
 					// Capture the number of routines.
-					routines := int(atomic.LoadInt64(&w.routines))
+					routines := int(atomic.LoadInt64(&p.routines))
 
 					// Are there routines to remove.
-					if routines <= w.minRoutines {
-						w.log("Work Manager : Reached Minimum Can't Remove")
+					if routines <= p.minRoutines {
+						p.log("Work Manager : Reached Minimum Can't Remove")
 						break
 					}
 
 					// Send a kill signal to remove a routine.
-					w.kill <- struct{}{}
+					p.kill <- struct{}{}
 				}
 
 			case <-timer.C:
 				// Capture the stats.
-				routines := atomic.LoadInt64(&w.routines)
-				pending := atomic.LoadInt64(&w.pending)
-				active := atomic.LoadInt64(&w.active)
+				routines := atomic.LoadInt64(&p.routines)
+				pending := atomic.LoadInt64(&p.pending)
+				active := atomic.LoadInt64(&p.active)
 
 				// Display the stats.
-				w.log(fmt.Sprintf("Work Manager : Stats : G[%d] P[%d] A[%d]", routines, pending, active))
+				p.log(fmt.Sprintf("Work Manager : Stats : G[%d] P[%d] A[%d]", routines, pending, active))
 
 				// Reset the clock.
-				timer.Reset(w.statTime)
+				timer.Reset(p.statTime)
 			}
 		}
 	}()
 }
 
 // log sending logging messages back to the client.
-func (w *Work) log(message string) {
-	if w.logFunc != nil {
-		w.logFunc(message)
+func (p *Pool) log(message string) {
+	if p.logFunc != nil {
+		p.logFunc(message)
 	}
 }
